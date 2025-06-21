@@ -67,6 +67,10 @@ deploy_cloudflare() {
   #   echo "client/config.json not found for endpoint update."
   # fi
   echo "Despliegue Cloudflare completado (endpoint no actualizado en config.json automáticamente)."
+  echo "NOTA PARA DESPLIEGUE MANUAL: Si despliegas manualmente sin este script,"
+  echo "asegúrate de ejecutar 'wrangler deploy' desde el directorio 'orchestrator/cloudflare/'."
+  echo "Si ejecutas 'wrangler deploy' desde la raíz del proyecto, necesitarás cambiar"
+  echo "'main = \"worker.js\"' a 'main = \"./orchestrator/cloudflare/worker.js\"' en 'orchestrator/cloudflare/wrangler.toml'."
 }
 
 # Placeholder for other deployment functions
