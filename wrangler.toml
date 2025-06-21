@@ -1,5 +1,5 @@
 name = "phantom-worker"
-main = "phantom_worker.js"
+main = "worker.js"            # Aquí debe ir EXACTO el nombre del archivo JS que usás
 compatibility_date = "2025-06-21"
 type = "javascript"
 
@@ -9,3 +9,4 @@ workers_dev = true
 kv_namespaces = [
   { binding = "SESSIONS", id = "e3c23be4e5ba432c7684c6b3707c3499" }
 ]
+
