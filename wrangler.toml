@@ -1,9 +1,7 @@
-name = "phantom-worker"       # Cambia el nombre si quieres otro
+name = "nombre-de-tu-worker"
+main = "worker.js"
 type = "javascript"
 
-main = "worker.js"
-
 account_id = "e3c23be4e5ba432c7684c6b3707c3499"
-workers_dev = true
-route = ""
-zone_id = ""
+
+compatibility_date = "2025-06-21"
