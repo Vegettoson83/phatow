@@ -1,5 +1,0 @@
-name = "phantom-worker"
-main = "worker.js"
-compatibility_date = "2025-06-21"
-usage_model = "bundled"
-workers_dev = true
