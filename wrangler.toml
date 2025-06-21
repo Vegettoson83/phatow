@@ -1,0 +1,11 @@
+name = "phantom-worker"
+main = "phantom_worker.js"
+compatibility_date = "2025-06-21"
+type = "javascript"
+
+account_id = "e3c23be4e5ba432c7684c6b3707c3499"
+workers_dev = true
+
+kv_namespaces = [
+  { binding = "SESSIONS", id = "e3c23be4e5ba432c7684c6b3707c3499" }
+]
