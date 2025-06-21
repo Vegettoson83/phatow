@@ -14,7 +14,9 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
 # Configuración automática
-DEFAULT_WORKER_URL = https://phantom-wo.brucewill945.workers.dev
+DEFAULT_WORKER_URL = "https://phantom-wo.brucewill945.workers.dev"
+
+
 DEFAULT_SOCKS_PORT = 1080
 
 class PhantomClient:
