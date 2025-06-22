@@ -1,4 +1,4 @@
-name = "phantom-wo"
+name = "phantom-worker"
 main = "worker.js"
 type = "javascript"
 
