@@ -19,25 +19,24 @@ async function handleRequest(request) {
     return handleTunnel(request)
   }
 
-  return camouflageResponse(request)
+  return new Response('Not found', { status: 404 })
 }
 
 async function handleKeyExchange(request) {
   try {
     const clientKey = new Uint8Array(await request.arrayBuffer())
 
-    // Generar par de claves P-256
     const serverKeyPair = await crypto.subtle.generateKey(
       {
         name: 'ECDH',
-        namedCurve: 'P-256'
+        namedCurve: 'X25519'
       },
       true,
       ['deriveKey']
     )
 
     const serverPublicKey = await crypto.subtle.exportKey(
-      'raw', // para obtener formato X9.62 sin compresión
+      'raw',
       serverKeyPair.publicKey
     )
 
@@ -71,24 +70,25 @@ async function handleHandshakeConfirmation(request) {
 
   const session = sessions.get(sessionId)
 
-  // Importar clave pública cliente
   const clientPublicKey = await crypto.subtle.importKey(
     'raw',
     session.clientKey,
-    { name: 'ECDH', namedCurve: 'P-256' },
+    { name: 'ECDH', namedCurve: 'X25519' },
     false,
     []
   )
 
-  // Derivar clave compartida
   const derivedKey = await crypto.subtle.deriveKey(
     {
       name: 'ECDH',
       public: clientPublicKey
     },
     session.serverKeyPair.privateKey,
-    { name: 'AES-GCM', length: 256 },
-    true,
+    {
+      name: 'AES-GCM',
+      length: 256
+    },
+    false,
     ['encrypt', 'decrypt']
   )
 
@@ -113,52 +113,38 @@ async function handleTunnel(request) {
   const [client, server] = Object.values(new WebSocketPair())
   server.accept()
 
-  // Variables para TCP (simulado con sockets TCP en entorno Cloudflare no disponible)
-  let targetSocket = null
-
   server.addEventListener('message', async event => {
     if (event.data instanceof ArrayBuffer) {
       try {
         const data = new Uint8Array(event.data)
-
-        // Descifrar mensaje
         const iv = data.slice(0, 12)
-        const encrypted = data.slice(12)
+        const ciphertext = data.slice(12)
         const decrypted = await crypto.subtle.decrypt(
           { name: 'AES-GCM', iv },
           session.derivedKey,
-          encrypted
+          ciphertext
         )
 
-        // El primer mensaje es el destino "host:port"
         if (!session.target) {
-          const targetStr = new TextDecoder().decode(decrypted)
-          const [host, portStr] = targetStr.split(':')
-          session.target = { host, port: parseInt(portStr, 10) }
-
-          // Aquí se debería conectar al host:port pero Workers no permite TCP real
-          // En entorno real habría que crear socket TCP y vincular eventos
-          // Por ahora solo confirmamos que está listo
-          server.send(new TextEncoder().encode('CONNECTED'))
-
+          const target = new TextDecoder().decode(decrypted)
+          session.target = target
+          server.send(new TextEncoder().encode('READY'))
           return
         }
 
-        // Aquí reenviarías datos al socket TCP destino si estuviera disponible
-        // Como ejemplo, simplemente echo de vuelta cifrado
-        const nonce = crypto.getRandomValues(new Uint8Array(12))
+        const responseIV = crypto.getRandomValues(new Uint8Array(12))
         const encryptedReply = await crypto.subtle.encrypt(
-          { name: 'AES-GCM', iv: nonce },
+          { name: 'AES-GCM', iv: responseIV },
           session.derivedKey,
-          decrypted // echo de vuelta
+          decrypted
         )
-        const payload = new Uint8Array(nonce.length + encryptedReply.byteLength)
-        payload.set(nonce)
-        payload.set(new Uint8Array(encryptedReply), nonce.length)
+        const payload = new Uint8Array(responseIV.length + encryptedReply.byteLength)
+        payload.set(responseIV)
+        payload.set(new Uint8Array(encryptedReply), responseIV.length)
 
         server.send(payload)
-      } catch (err) {
-        server.close(1011, 'Decryption failed')
+      } catch (_) {
+        server.close(1011, 'Failed to decrypt')
       }
     }
   })
@@ -181,20 +167,7 @@ function getSessionId(request) {
 }
 
 function arrayBufferToBase64(buffer) {
-  let binary = ''
-  const bytes = new Uint8Array(buffer)
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i])
-  }
-  return btoa(binary)
+  return btoa(String.fromCharCode(...new Uint8Array(buffer)))
 }
 
-function camouflageResponse(request) {
-  const url = new URL(request.url)
-  if (url.pathname.includes('/recaptcha')) {
-    return new Response(JSON.stringify({ success: true }), {
-      headers: { 'Content-Type': 'application/json' }
-    })
-  }
-  return new Response('Not found', { status: 404 })
 }
