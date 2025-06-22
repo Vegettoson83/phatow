@@ -1,211 +1,190 @@
-#!/usr/bin/env python3
-# phantom_proxy.py - Plug & Play Stealth Proxy
-import asyncio
-import sys
-import os
-import base64
-import struct
-import aiohttp
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+#!/usr/bin/env node
+const net = require('net')
+const crypto = require('crypto')
+const WebSocket = require('ws')
+const axios = require('axios')
 
-# Configuración automática
-DEFAULT_WORKER_URL = "https://phantom-wo.brucewill945.workers.dev"
-DEFAULT_SOCKS_PORT = 1080
+const DEFAULT_WORKER_URL = 'https://phantom-wo.silkvalley612.workers.dev'
+const DEFAULT_SOCKS_PORT = 1080
 
-class PhantomClient:
-    def __init__(self, worker_url):
-        self.worker_url = worker_url
-        self.session = aiohttp.ClientSession()
-        self.crypto = self.PhantomCrypto()
-        self.session_id = None
-    
-    class PhantomCrypto:
-        def __init__(self):
-            self.private_key = ec.generate_private_key(ec.SECP256R1())
-            self.public_key = self.private_key.public_key()
-            self.shared_key = None
-            self.aesgcm = None
-        
-        def derive_shared_key(self, peer_public_key_bytes):
-            peer_public_key = ec.EllipticCurvePublicKey.from_encoded_point(
-                ec.SECP256R1(), peer_public_key_bytes
-            )
-            shared_secret = self.private_key.exchange(ec.ECDH(), peer_public_key)
-            
-            hkdf = HKDF(
-                algorithm=hashes.SHA256(),
-                length=32,
-                salt=None,
-                info=b'phantom_proxy_session',
-                backend=default_backend()
-            )
-            self.shared_key = hkdf.derive(shared_secret)
-            self.aesgcm = AESGCM(self.shared_key)
-    
-    async def handshake(self):
-        """Realiza el protocolo de enlace con el worker"""
-        # Fase 1: Envía clave pública
-        public_key_bytes = self.crypto.public_key.public_bytes(
-            encoding=serialization.Encoding.X962,
-            format=serialization.PublicFormat.UncompressedPoint
-        )
-        
-        async with self.session.post(
-            f"{self.worker_url}/phantom-init",
-            data=public_key_bytes
-        ) as resp:
-            if resp.status != 200:
-                raise ConnectionError("Handshake phase 1 failed")
-            
-            response = await resp.json()
-            self.session_id = response['session_id']
-            server_key = base64.b64decode(response['server_key'])
-        
-        # Fase 2: Confirmación
-        self.crypto.derive_shared_key(server_key)
-        async with self.session.get(
-            f"{self.worker_url}/phantom-handshake",
-            cookies={'phantom-sid': self.session_id}
-        ) as resp:
-            if await resp.text() != "HANDSHAKE_SUCCESS":
-                raise ConnectionError("Handshake phase 2 failed")
-    
-    async def connect(self, host, port):
-        """Establece conexión con el destino a través del túnel"""
-        # Conectar via WebSocket
-        self.ws = await self.session.ws_connect(
-            f"{self.worker_url}/tunnel",
-            cookies={'phantom-sid': self.session_id}
-        )
-        
-        # Enviar destino cifrado
-        target = f"{host}:{port}".encode()
-        nonce = os.urandom(12)
-        encrypted = nonce + self.crypto.aesgcm.encrypt(nonce, target, None)
-        await self.ws.send_bytes(encrypted)
-    
-    def encrypt(self, data):
-        """Cifra datos con nonce aleatorio"""
-        nonce = os.urandom(12)
-        return nonce + self.crypto.aesgcm.encrypt(nonce, data, None)
-    
-    def decrypt(self, data):
-        """Descifra datos"""
-        if len(data) < 12:
-            raise ValueError("Datos cifrados inválidos")
-        nonce = data[:12]
-        ciphertext = data[12:]
-        return self.crypto.aesgcm.decrypt(nonce, ciphertext, None)
-    
-    async def proxy_data(self, reader, writer):
-        """Reenvía datos entre cliente SOCKS y túnel Phantom"""
-        async def local_to_remote():
-            try:
-                while True:
-                    data = await reader.read(4096)
-                    if not data:
-                        await self.ws.close()
-                        break
-                    encrypted = self.encrypt(data)
-                    await self.ws.send_bytes(encrypted)
-            except Exception as e:
-                print("Local to remote error:", e)
-            finally:
-                await self.ws.close()
-        
-        async def remote_to_local():
-            try:
-                async for msg in self.ws:
-                    if msg.type == aiohttp.WSMsgType.BINARY:
-                        decrypted = self.decrypt(msg.data)
-                        writer.write(decrypted)
-                        await writer.drain()
-            except Exception as e:
-                print("Remote to local error:", e)
-            finally:
-                writer.close()
-        
-        await asyncio.gather(local_to_remote(), remote_to_local())
+class PhantomCrypto {
+  constructor() {
+    this.ecdh = crypto.createECDH('prime256v1')
+    this.ecdh.generateKeys()
+    this.sharedKey = null
+  }
 
-async def handle_socks5(reader, writer, worker_url):
-    """Implementación básica de servidor SOCKS5"""
-    # Autenticación
-    await reader.read(2)  # Leer versión y número de métodos
-    writer.write(b"\x05\x00")  # Sin autenticación
-    await writer.drain()
-    
-    # Leer solicitud de conexión
-    request = await reader.read(4)
-    version, cmd, _, addr_type = request
-    
-    if cmd != 1:  # Solo soportamos CONNECT
-        writer.close()
-        return
-    
-    if addr_type == 1:  # IPv4
-        host = ".".join(str(b) for b in await reader.read(4))
-        port_bytes = await reader.read(2)
-        port = struct.unpack("!H", port_bytes)[0]
-    elif addr_type == 3:  # Nombre de dominio
-        domain_length = (await reader.read(1))[0]
-        host = (await reader.read(domain_length)).decode()
-        port_bytes = await reader.read(2)
-        port = struct.unpack("!H", port_bytes)[0]
-    else:
-        writer.close()
-        return
-    
-    # Iniciar cliente Phantom
-    client = PhantomClient(worker_url)
-    try:
-        await client.handshake()
-        await client.connect(host, port)
-    except Exception as e:
-        print("Phantom connection failed:", e)
-        writer.close()
-        return
-    
-    # Confirmar conexión exitosa
-    writer.write(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
-    await writer.drain()
-    
-    # Iniciar proxy de datos
-    await client.proxy_data(reader, writer)
+  getPublicKey() {
+    return this.ecdh.getPublicKey(null, 'uncompressed')
+  }
 
-async def main(worker_url, socks_port):
-    server = await asyncio.start_server(
-        lambda r, w: handle_socks5(r, w, worker_url),
-        "127.0.0.1", socks_port
-    )
-    print(f"🔥 Phantom Proxy activo en 127.0.0.1:{socks_port}")
-    print(f"🔗 Conectando a worker: {worker_url}")
-    async with server:
-        await server.serve_forever()
+  deriveSharedKey(peerPublicKey) {
+    this.sharedKey = this.ecdh.computeSecret(peerPublicKey)
+    this.sharedKey = crypto.hkdfSync('sha256', this.sharedKey, null, Buffer.from('phantom_proxy_session'), 32)
+  }
 
-if __name__ == "__main__":
-    worker_url = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_WORKER_URL
-    socks_port = int(sys.argv[2]) if len(sys.argv) > 2 else DEFAULT_SOCKS_PORT
-    
-    # Verificar dependencias
-    try:
-        import cryptography
-    except ImportError:
-        print("Instala las dependencias: pip install aiohttp cryptography")
-        sys.exit(1)
-    
-    print("""
-    ██████╗ ██╗  ██╗ █████╗ ███╗   ██╗████████╗ ██████╗ ███╗   ███╗
-    ██╔══██╗██║  ██║██╔══██╗████╗  ██║╚══██╔══╝██╔═══██╗████╗ ████║
-    ██████╔╝███████║███████║██╔██╗ ██║   ██║   ██║   ██║██╔████╔██║
-    ██╔═══╝ ██╔══██║██╔══██║██║╚██╗██║   ██║   ██║   ██║██║╚██╔╝██║
-    ██║     ██║  ██║██║  ██║██║ ╚████║   ██║   ╚██████╔╝██║ ╚═╝ ██║
-    ╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝    ╚═════╝ ╚═╝     ╚═╝
-    Plug & Play Stealth Proxy v1.0
-    """)
-    asyncio.run(main(worker_url, socks_port))
+  encrypt(plaintext) {
+    const iv = crypto.randomBytes(12)
+    const cipher = crypto.createCipheriv('aes-256-gcm', this.sharedKey, iv)
+    const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()])
+    const tag = cipher.getAuthTag()
+    return Buffer.concat([iv, encrypted, tag])
+  }
+
+  decrypt(data) {
+    if (data.length < 28) throw new Error('Encrypted data too short')
+    const iv = data.slice(0, 12)
+    const tag = data.slice(data.length - 16)
+    const encrypted = data.slice(12, data.length - 16)
+    const decipher = crypto.createDecipheriv('aes-256-gcm', this.sharedKey, iv)
+    decipher.setAuthTag(tag)
+    return Buffer.concat([decipher.update(encrypted), decipher.final()])
+  }
+}
+
+class PhantomClient {
+  constructor(workerUrl) {
+    this.workerUrl = workerUrl
+    this.crypto = new PhantomCrypto()
+    this.sessionId = null
+    this.ws = null
+  }
+
+  async handshake() {
+    const pubKey = this.crypto.getPublicKey()
+    const resp = await axios.post(`${this.workerUrl}/phantom-init`, pubKey, {
+      headers: { 'Content-Type': 'application/octet-stream' },
+      validateStatus: () => true,
+    })
+    if (resp.status !== 200) throw new Error('Handshake phase 1 failed')
+    this.sessionId = resp.data.session_id
+    const serverKey = Buffer.from(resp.data.server_key, 'base64')
+    this.crypto.deriveSharedKey(serverKey)
+
+    const handshakeResp = await axios.get(`${this.workerUrl}/phantom-handshake`, {
+      headers: { Cookie: `phantom-sid=${this.sessionId}` },
+      validateStatus: () => true,
+    })
+    if (handshakeResp.data !== 'HANDSHAKE_SUCCESS') throw new Error('Handshake phase 2 failed')
+  }
+
+  async connect(host, port) {
+    this.ws = new WebSocket(`${this.workerUrl.replace(/^http/, 'ws')}/tunnel`, {
+      headers: { Cookie: `phantom-sid=${this.sessionId}` },
+    })
+
+    await new Promise((res, rej) => {
+      this.ws.once('open', res)
+      this.ws.once('error', rej)
+    })
+
+    const target = Buffer.from(`${host}:${port}`)
+    this.ws.send(this.crypto.encrypt(target))
+  }
+
+  async proxyData(socket) {
+    this.ws.on('message', data => {
+      try {
+        const decrypted = this.crypto.decrypt(Buffer.from(data))
+        socket.write(decrypted)
+      } catch (e) {
+        console.error('Decrypt error:', e)
+        socket.destroy()
+        this.ws.close()
+      }
+    })
+
+    socket.on('data', data => {
+      try {
+        this.ws.send(this.crypto.encrypt(data))
+      } catch (e) {
+        console.error('Encrypt error:', e)
+        socket.destroy()
+        this.ws.close()
+      }
+    })
+
+    socket.on('close', () => this.ws.close())
+    this.ws.on('close', () => socket.destroy())
+  }
+}
+
+async function handleSocksConnection(socket, workerUrl) {
+  try {
+    const header = await readBytes(socket, 2)
+    if (header[0] !== 0x05) throw new Error('Invalid SOCKS version')
+    const nMethods = header[1]
+    await readBytes(socket, nMethods)
+    socket.write(Buffer.from([0x05, 0x00]))
+
+    const req = await readBytes(socket, 4)
+    if (req[1] !== 0x01) { socket.end(); return }
+
+    let addr, port
+    if (req[3] === 0x01) {
+      const ipBuf = await readBytes(socket, 4)
+      addr = Array.from(ipBuf).join('.')
+    } else if (req[3] === 0x03) {
+      const lenBuf = await readBytes(socket, 1)
+      const len = lenBuf[0]
+      const domainBuf = await readBytes(socket, len)
+      addr = domainBuf.toString()
+    } else {
+      socket.end()
+      return
+    }
+    const portBuf = await readBytes(socket, 2)
+    port = portBuf.readUInt16BE(0)
+
+    const client = new PhantomClient(workerUrl)
+    await client.handshake()
+    await client.connect(addr, port)
+
+    socket.write(Buffer.from([
+      0x05, 0x00, 0x00, 0x01,
+      0,0,0,0,
+      0,0
+    ]))
+
+    await client.proxyData(socket)
+  } catch (e) {
+    console.error('SOCKS connection error:', e)
+    socket.destroy()
+  }
+}
+
+function readBytes(socket, length) {
+  return new Promise((resolve, reject) => {
+    let buf = Buffer.alloc(0)
+    function onData(data) {
+      buf = Buffer.concat([buf, data])
+      if (buf.length >= length) {
+        socket.pause()
+        socket.removeListener('data', onData)
+        resolve(buf.slice(0, length))
+        const leftover = buf.slice(length)
+        if (leftover.length > 0) socket.unshift(leftover)
+        socket.resume()
+      }
+    }
+    socket.on('data', onData)
+    socket.on('error', reject)
+    socket.on('close', () => reject(new Error('Socket closed')))
+  })
+}
+
+async function main() {
+  const workerUrl = process.argv[2] || DEFAULT_WORKER_URL
+  const socksPort = parseInt(process.argv[3]) || DEFAULT_SOCKS_PORT
+
+  const server = net.createServer(socket => handleSocksConnection(socket, workerUrl))
+
+  server.listen(socksPort, '127.0.0.1', () => {
+    console.log(`🔥 Phantom Proxy activo en 127.0.0.1:${socksPort}`)
+    console.log(`🔗 Conectando a worker: ${workerUrl}`)
+  })
+}
+
+main().catch(console.error)
+
 
