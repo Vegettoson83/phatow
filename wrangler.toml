@@ -1,8 +1,6 @@
 name = "phantom-wo"
 main = "worker.js"
 type = "javascript"
-
 account_id = "3e90abd80093fc72e402b32d512d5e39"
-
-
 compatibility_date = "2025-06-21"
+
