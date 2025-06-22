@@ -7,16 +7,14 @@ import base64
 import struct
 import aiohttp
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import x25519
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # Configuración automática
 DEFAULT_WORKER_URL = "https://phantom-wo.brucewill945.workers.dev"
-
-
 DEFAULT_SOCKS_PORT = 1080
 
 class PhantomClient:
@@ -28,14 +26,16 @@ class PhantomClient:
     
     class PhantomCrypto:
         def __init__(self):
-            self.private_key = x25519.X25519PrivateKey.generate()
+            self.private_key = ec.generate_private_key(ec.SECP256R1())
             self.public_key = self.private_key.public_key()
             self.shared_key = None
-            self.chacha = None
+            self.aesgcm = None
         
         def derive_shared_key(self, peer_public_key_bytes):
-            peer_public_key = x25519.X25519PublicKey.from_public_bytes(peer_public_key_bytes)
-            shared_secret = self.private_key.exchange(peer_public_key)
+            peer_public_key = ec.EllipticCurvePublicKey.from_encoded_point(
+                ec.SECP256R1(), peer_public_key_bytes
+            )
+            shared_secret = self.private_key.exchange(ec.ECDH(), peer_public_key)
             
             hkdf = HKDF(
                 algorithm=hashes.SHA256(),
@@ -45,14 +45,14 @@ class PhantomClient:
                 backend=default_backend()
             )
             self.shared_key = hkdf.derive(shared_secret)
-            self.chacha = ChaCha20Poly1305(self.shared_key)
+            self.aesgcm = AESGCM(self.shared_key)
     
     async def handshake(self):
         """Realiza el protocolo de enlace con el worker"""
         # Fase 1: Envía clave pública
         public_key_bytes = self.crypto.public_key.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw
+            encoding=serialization.Encoding.X962,
+            format=serialization.PublicFormat.UncompressedPoint
         )
         
         async with self.session.post(
@@ -85,13 +85,14 @@ class PhantomClient:
         
         # Enviar destino cifrado
         target = f"{host}:{port}".encode()
-        encrypted = self.crypto.chacha.encrypt(os.urandom(12), target, None)
+        nonce = os.urandom(12)
+        encrypted = nonce + self.crypto.aesgcm.encrypt(nonce, target, None)
         await self.ws.send_bytes(encrypted)
     
     def encrypt(self, data):
         """Cifra datos con nonce aleatorio"""
         nonce = os.urandom(12)
-        return nonce + self.crypto.chacha.encrypt(nonce, data, None)
+        return nonce + self.crypto.aesgcm.encrypt(nonce, data, None)
     
     def decrypt(self, data):
         """Descifra datos"""
@@ -99,7 +100,7 @@ class PhantomClient:
             raise ValueError("Datos cifrados inválidos")
         nonce = data[:12]
         ciphertext = data[12:]
-        return self.crypto.chacha.decrypt(nonce, ciphertext, None)
+        return self.crypto.aesgcm.decrypt(nonce, ciphertext, None)
     
     async def proxy_data(self, reader, writer):
         """Reenvía datos entre cliente SOCKS y túnel Phantom"""
@@ -207,3 +208,4 @@ if __name__ == "__main__":
     Plug & Play Stealth Proxy v1.0
     """)
     asyncio.run(main(worker_url, socks_port))
+
