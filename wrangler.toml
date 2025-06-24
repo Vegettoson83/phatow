@@ -1,4 +1,4 @@
-name = "phantom-wo"
+name = "shadow"
 main = "worker.js"
 type = "javascript"
 
