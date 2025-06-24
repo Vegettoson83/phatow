@@ -1,4 +1,4 @@
-// phantom-client-socks5.js (compatible con P-256 para el worker downgraded)
+// phantom-client-socks5.js (Node.js compatible, downgraded to P-256)
 import fetch from 'node-fetch';
 import WebSocket from 'ws';
 import net from 'net';
@@ -11,22 +11,22 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 const WORKER_URL = 'https://shadow.silkvalley612.workers.dev';
-const LOCAL_PORT = 1080; // Puerto local SOCKS5
+const LOCAL_PORT = 1080; // Local SOCKS5 proxy port
 
 async function deriveKeyAndInitSession() {
-  // Generar par de claves ECDH con curva P-256
+  // Generate ECDH P-256 key pair
   const clientKeyPair = await crypto.subtle.generateKey(
     { name: 'ECDH', namedCurve: 'P-256' },
     true,
     ['deriveKey']
   );
 
-  // Exportar clave pública del cliente (formato raw)
+  // Export client's public key
   const clientPubRaw = new Uint8Array(
     await crypto.subtle.exportKey('raw', clientKeyPair.publicKey)
   );
 
-  // Iniciar sesión con phantom-init
+  // Initiate phantom-init
   const initResp = await fetch(`${WORKER_URL}/phantom-init`, {
     method: 'POST',
     body: Buffer.from(clientPubRaw),
@@ -34,7 +34,7 @@ async function deriveKeyAndInitSession() {
   const { session_id, server_key } = await initResp.json();
   const cookie = initResp.headers.get('set-cookie');
 
-  // Importar clave pública del servidor
+  // Import server's public key
   const serverPubRaw = Uint8Array.from(Buffer.from(server_key, 'base64'));
   const serverPublicKey = await crypto.subtle.importKey(
     'raw',
@@ -44,7 +44,7 @@ async function deriveKeyAndInitSession() {
     []
   );
 
-  // Derivar clave compartida AES-GCM
+  // Derive shared AES-GCM key
   const derivedKey = await crypto.subtle.deriveKey(
     { name: 'ECDH', public: serverPublicKey },
     clientKeyPair.privateKey,
@@ -53,7 +53,7 @@ async function deriveKeyAndInitSession() {
     ['encrypt', 'decrypt']
   );
 
-  // Confirmar handshake
+  // Confirm handshake
   await fetch(`${WORKER_URL}/phantom-handshake`, {
     method: 'POST',
     headers: { Cookie: cookie }
@@ -116,7 +116,6 @@ function startSocks5Proxy(derivedKey, cookie) {
           );
           ws.send(encryptedTarget);
 
-          // Respuesta SOCKS5 OK
           socket.write(Buffer.from([
             0x05, 0x00, 0x00, 0x01,
             0x00, 0x00, 0x00, 0x00,
@@ -135,7 +134,7 @@ function startSocks5Proxy(derivedKey, cookie) {
         const plain = await decryptMessage(derivedKey, Buffer.from(msg));
         socket.write(plain);
       } catch (err) {
-        console.error('[!] Error al desencriptar:', err.message);
+        console.error('[!] Decryption error:', err.message);
       }
     });
 
@@ -144,7 +143,7 @@ function startSocks5Proxy(derivedKey, cookie) {
   });
 
   server.listen(LOCAL_PORT, () => {
-    console.log(`[+] SOCKS5 proxy corriendo en 127.0.0.1:${LOCAL_PORT}`);
+    console.log(`[+] SOCKS5 proxy running on 127.0.0.1:${LOCAL_PORT}`);
   });
 }
 
@@ -152,3 +151,4 @@ function startSocks5Proxy(derivedKey, cookie) {
   const { derivedKey, cookie } = await deriveKeyAndInitSession();
   startSocks5Proxy(derivedKey, cookie);
 })();
+
