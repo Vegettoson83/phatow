@@ -139,6 +139,9 @@ Si encuentras problemas durante la ejecución del script `deploy-ultimate.sh`:
 3.  **Autenticación Cloudflare**: Verifica que `cloudflared login` y `wrangler login` se hayan completado correctamente y que las credenciales/tokens generados tengan los permisos necesarios.
 4.  **Conflictos de Recursos**: Si el script falla al crear recursos como el túnel, D1 DB o KV namespace, pueden existir con el mismo nombre. El script intenta manejar esto buscando IDs existentes, pero la intervención manual podría ser necesaria.
 5.  **Dependencias**: Asegúrate de que todas las dependencias (`jq`, `nodejs`, `npm`, `golang`, `docker`) están correctamente instaladas y en el PATH del sistema.
+6.  **Entorno de Cloudflare Workers**:
+    *   Los Cloudflare Workers tienen un entorno de ejecución específico, no un entorno Node.js completo. APIs de Node.js como `Buffer` (uso directo como `new Buffer()`) no están disponibles. Utiliza APIs web estándar como `Uint8Array`, `TextEncoder`, `atob()` (para decodificar base64) y `btoa()` (para codificar a base64).
+    *   Para cierta compatibilidad con módulos de Node.js, puedes usar la bandera `nodejs_compat` en tu `wrangler.toml`, pero es preferible usar APIs web cuando sea posible para un rendimiento óptimo y menor tamaño del bundle. El `worker.js` actual ha sido refactorizado para usar estas APIs web.
 
 ---
 
