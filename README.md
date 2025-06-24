@@ -1,529 +1,145 @@
-# 🚀 Phantom Gateway 2.0: Arquitectura Final - Spectrum Killer Edition 🚀
+# 🚀 Phantom Gateway 2.0: Setup Completamente Automático en Cloudflare
+
+Este proyecto implementa Phantom Gateway 2.0, una solución de proxy SOCKS5 resistente a la censura que utiliza Cloudflare Tunnels y Workers. El script `deploy-ultimate.sh` automatiza completamente la configuración y el despliegue.
 
 ```mermaid
 graph TD
-    A[User] -->|SOCKS5| B[Node.js Client Proxy]
-    B -->|WebSocket| C[Cloudflare Worker]
-    C -->|cloudflared Tunnel| D[Origin Proxy]
-    D --> E[Node.js Backend]
-    E --> F[External Internet]
-    F -->|Response| E
-    E -->|Response| D
-    D -->|Response| C
-    C -->|Response| B
-    B -->|Response| A
+    A[Developer Clona Repo o Ejecuta Script Remoto] --> B[Ejecutar deploy-ultimate.sh]
+    B --> C[Autenticación Cloudflare y Wrangler]
+    C --> D[Creación/Configuración Cloudflare Tunnel]
+    D --> E[Creación Recursos Cloudflare (D1, KV)]
+    E --> F[Configuración y Despliegue Worker]
+    F --> G[Configuración Cliente (config.json)]
+    G --> H[Instalación Dependencias (Backend y Cliente)]
+    H --> I[Inicio Servicios (Tunnel, Backend, Cliente)]
+    I --> J[Verificación Automática de Conexión]
+    J --> K[Cliente SOCKS5 Funcionando y Listo]
 ```
 
-He implementado tu visión mejorada con estas optimizaciones clave:
+## 🔥 Script Todo-en-Uno (`deploy-ultimate.sh`)
 
-## 🔥 Implementación Final Ultra-Optimizada
+El corazón de este proyecto es el script `deploy-ultimate.sh`. Este script está diseñado para configurar todos los componentes necesarios con una intervención manual mínima.
 
-### 1. Cliente Node.js (SOCKS5 Proxy + WebSocket)
-```javascript
-// client/index.js
-import { SocksProxyAgent } from 'socks-proxy-agent';
-import WebSocket from 'ws';
-import net from 'net';
-import crypto from 'crypto';
+**Consulte el contenido completo y los comentarios dentro del script [`deploy-ultimate.sh`](./deploy-ultimate.sh) para obtener detalles sobre cada paso.**
 
-class PhantomClient {
-  constructor(config) {
-    this.config = config;
-    this.ws = null;
-    this.connections = new Map(); // sessionId → { clientSocket, remoteSocket }
-    this.reconnectAttempts = 0;
-    this.stats = {
-      bytesSent: 0,
-      bytesReceived: 0,
-      connections: 0
-    };
-  }
+## 🚀 Cómo Usarlo (¡Solo 2 Pasos!)
 
-  async start() {
-    this.connectToWorker();
-    this.startSocksServer();
-    this.startTrafficCamouflage();
-  }
+### Paso 1: Prepara tu entorno
+- Asegúrate de tener un dominio configurado en Cloudflare.
+- Tener `cloudflared` y `wrangler` CLI instalados y autenticados con tu cuenta de Cloudflare. El script intentará instalarlos si no se encuentran y te guiará a través del login si es necesario.
+  - `cloudflared login`
+  - `wrangler login`
+- Asegúrate de tener `git`, `jq`, `nodejs`, `npm`, `golang` y `docker` instalados. El script intentará instalarlos usando el gestor de paquetes del sistema (apt, yum, brew).
+- **Importante**: El script utiliza `sudo` para instalar dependencias globales. Revísalo si es necesario.
 
-  connectToWorker() {
-    this.ws = new WebSocket(this.config.workerUrl, {
-      headers: {
-        'X-Phantom-Auth': crypto.createHmac('sha256', this.config.secret)
-          .update(Date.now().toString())
-          .digest('hex')
-      }
-    });
+### Paso 2: Ejecuta el comando mágico
 
-    this.ws.on('open', () => {
-      this.reconnectAttempts = 0;
-      console.log('🔥 Conectado al Phantom Worker');
-    });
-
-    this.ws.on('message', this.handleWorkerMessage.bind(this));
-
-    this.ws.on('close', () => {
-      console.log(`⏳ Reconectando en ${Math.min(30, ++this.reconnectAttempts)}s...`);
-      setTimeout(() => this.connectToWorker(), this.reconnectAttempts * 1000);
-    });
-  }
-
-  handleWorkerMessage(data) {
-    const message = JSON.parse(data);
-
-    switch (message.type) {
-      case 'data':
-        this.handleDataMessage(message);
-        break;
-      case 'metrics':
-        this.handleMetrics(message);
-        break;
-      case 'switch-endpoint':
-        this.switchEndpoint(message);
-        break;
-    }
-  }
-
-  handleDataMessage({ sessionId, data }) {
-    const conn = this.connections.get(sessionId);
-    if (conn && conn.clientSocket.writable) {
-      conn.clientSocket.write(Buffer.from(data, 'base64'));
-      this.stats.bytesReceived += data.length;
-    }
-  }
-
-  startSocksServer() {
-    const server = net.createServer(socket => {
-      const sessionId = crypto.randomBytes(8).toString('hex');
-      this.connections.set(sessionId, { clientSocket: socket });
-      this.stats.connections++;
-
-      socket.on('data', data => {
-        this.stats.bytesSent += data.length;
-        this.ws.send(JSON.stringify({
-          type: 'data',
-          sessionId,
-          data: data.toString('base64')
-        }));
-      });
-
-      socket.on('end', () => {
-        this.ws.send(JSON.stringify({ type: 'close', sessionId }));
-        this.connections.delete(sessionId);
-      });
-
-      socket.on('error', () => this.connections.delete(sessionId));
-    });
-
-    server.listen(this.config.socksPort, '127.0.0.1', () => {
-      console.log(`🔌 SOCKS5 escuchando en 127.0.0.1:${this.config.socksPort}`);
-    });
-  }
-
-  startTrafficCamouflage() {
-    // Genera tráfico legítimo para camuflar actividad
-    setInterval(() => {
-      fetch('https://www.google.com/analytics', {
-        method: 'POST',
-        body: JSON.stringify({
-          events: [{
-            name: `pageview_${crypto.randomBytes(2).toString('hex')}`,
-            params: {
-              engagement_time: Math.floor(Math.random() * 10),
-              session_id: `session_${Date.now()}`
-            }
-          }]
-        })
-      }).catch(() => {});
-    }, 15000);
-  }
-}
-
-// Configuración dinámica
-const config = {
-  workerUrl: 'wss://phantom-gateway.your-worker.workers.dev',
-  secret: process.env.PHANTOM_SECRET,
-  socksPort: 1080
-};
-
-const client = new PhantomClient(config);
-client.start();
-```
-
-### 2. Cloudflare Worker (WebSocket Proxy)
-```javascript
-// worker/index.js
-import { connect } from 'cloudflare:sockets';
-
-export default {
-  async fetch(request, env, ctx) {
-    const upgradeHeader = request.headers.get('Upgrade');
-    if (upgradeHeader === 'websocket') {
-      return this.handleWebSocket(request, env);
-    }
-
-    // Endpoint de salud
-    if (new URL(request.url).pathname === '/health') {
-      return new Response('🔥 PHANTOM GATEWAY OPERATIONAL 🔥');
-    }
-
-    return new Response('Invalid request', { status: 400 });
-  },
-
-  async handleWebSocket(request, env) {
-    const authHeader = request.headers.get('X-Phantom-Auth');
-    if (!this.verifyAuth(authHeader, env.AUTH_SECRET)) {
-      return new Response('Unauthorized', { status: 401 });
-    }
-
-    const [client, server] = Object.values(new WebSocketPair());
-    server.accept();
-
-    server.addEventListener('message', async ({ data }) => {
-      const message = JSON.parse(data);
-
-      if (message.type === 'init') {
-        try {
-          const tunnelSocket = connect({
-            hostname: env.TUNNEL_HOST,
-            port: env.TUNNEL_PORT
-          });
-
-          const writer = tunnelSocket.writable.getWriter();
-          await writer.write(new TextEncoder().encode(`${message.host}:${message.port}\n`));
-          writer.releaseLock();
-
-          this.setupBidirectionalForwarding(server, tunnelSocket, message.sessionId);
-        } catch (err) {
-          server.send(JSON.stringify({
-            type: 'error',
-            message: 'Tunnel connection failed'
-          }));
-          server.close(1008);
-        }
-      }
-    });
-
-    return new Response(null, { status: 101, webSocket: client });
-  },
-
-  setupBidirectionalForwarding(websocket, tunnelSocket, sessionId) {
-    // WebSocket → Tunnel
-    websocket.addEventListener('message', async ({ data }) => {
-      try {
-        const message = JSON.parse(data);
-        if (message.type === 'data') {
-          const writer = tunnelSocket.writable.getWriter();
-          await writer.write(Buffer.from(message.data, 'base64'));
-          writer.releaseLock();
-        }
-      } catch (err) {
-        console.error('Error forwarding data:', err);
-      }
-    });
-
-    // Tunnel → WebSocket
-    const reader = tunnelSocket.readable.getReader();
-    const readChunk = async () => {
-      try {
-        const { value, done } = await reader.read();
-        if (done) {
-          websocket.send(JSON.stringify({ type: 'close', sessionId }));
-          return;
-        }
-
-        websocket.send(JSON.stringify({
-          type: 'data',
-          sessionId,
-          data: value.toString('base64')
-        }));
-
-        readChunk();
-      } catch (err) {
-        websocket.close(1011, 'Tunnel error');
-      }
-    };
-
-    readChunk();
-  },
-
-  verifyAuth(clientToken, serverSecret) {
-    const [timestamp, signature] = clientToken.split('.');
-    const expected = crypto.createHmac('sha256', serverSecret)
-      .update(timestamp)
-      .digest('hex');
-
-    return signature === expected && Date.now() - parseInt(timestamp) < 5000;
-  }
-};
-```
-
-### 3. Backend Node.js (Ultra-Performance TCP Gateway)
-```javascript
-// backend/index.js
-import net from 'net';
-import { SocksProxyAgent } from 'socks-proxy-agent';
-import { createBrotliCompress, createBrotliDecompress } from 'zlib';
-import crypto from 'crypto';
-
-class PhantomBackend {
-  constructor() {
-    this.connections = new Map();
-    this.metrics = {
-      connections: 0,
-      bytesTransferred: 0,
-      errorCount: 0
-    };
-  }
-
-  start(port = 3000) {
-    this.server = net.createServer(socket => {
-      const connectionId = crypto.randomBytes(4).toString('hex');
-      this.connections.set(connectionId, { socket });
-      this.metrics.connections++;
-
-      let targetSocket = null;
-      let buffer = [];
-      let host = '';
-      let targetPort = 0; // Renamed to avoid conflict with the port argument of start()
-      let compression = null;
-      let decompression = null; // Added for symmetry
-
-      const setupConnection = () => {
-        try {
-          // Usar proxy si está configurado
-          const agent = process.env.EXTERNAL_PROXY
-            ? new SocksProxyAgent(process.env.EXTERNAL_PROXY)
-            : null;
-
-          targetSocket = net.connect({
-            host,
-            port: targetPort, // Use the renamed variable
-            agent,
-            servername: host // SNI para TLS
-          });
-
-          targetSocket.on('connect', () => {
-            // Vaciar buffer
-            while (buffer.length) {
-              const chunk = buffer.shift();
-              targetSocket.write(compression ?
-                compression.write(chunk) : chunk);
-            }
-            // If compression is active, ensure any buffered compressed data is flushed
-            if (compression) {
-                compression.flush();
-            }
-          });
-
-          // Pipe bidireccional con compresión opcional
-          if (compression && decompression) {
-            socket.pipe(compression).pipe(targetSocket);
-            targetSocket.pipe(decompression).pipe(socket);
-          } else {
-            socket.pipe(targetSocket);
-            targetSocket.pipe(socket);
-          }
-
-          targetSocket.on('data', data => {
-            this.metrics.bytesTransferred += data.length;
-          });
-
-          targetSocket.on('error', handleError);
-          targetSocket.on('end', () => { // Handle target socket closing
-            socket.end();
-            this.connections.delete(connectionId);
-          });
-        } catch (err) {
-          handleError(err);
-        }
-      };
-
-      const handleError = (err) => {
-        this.metrics.errorCount++;
-        console.error(`Error on connection ${connectionId} to ${host}:${targetPort}:`, err.message);
-        socket.end();
-        targetSocket?.destroy(); // Use destroy to ensure no more I/O
-        this.connections.delete(connectionId);
-      };
-
-      socket.on('data', data => {
-        // Primera línea: "host:port[:compression]\n"
-        if (!targetSocket) {
-          const headerEnd = data.indexOf('\n');
-          if (headerEnd === -1) {
-            buffer.push(data); // Buffer data if header is not complete
-            return;
-          }
-
-          const completeData = Buffer.concat([...buffer, data]); // Concatenate buffered parts with new data
-          const headerPart = completeData.subarray(0, completeData.indexOf('\n'));
-          const bodyPart = completeData.subarray(completeData.indexOf('\n') + 1);
-
-          buffer = []; // Clear buffer
-
-          const header = headerPart.toString();
-          const parts = header.split(':');
-          host = parts[0];
-          targetPort = parseInt(parts[1], 10); // Parse port to integer
-          const compressionType = parts[2];
-
-          if (compressionType === 'br') {
-            compression = createBrotliCompress();
-            decompression = createBrotliDecompress();
-          }
-
-          if (host && targetPort) { // Ensure host and port are valid
-             setupConnection();
-             if (bodyPart.length > 0) { // If there's data after header, process it
-                if (targetSocket && targetSocket.writable) {
-                    targetSocket.write(compression ? compression.write(bodyPart) : bodyPart);
-                    if (compression) compression.flush();
-                } else {
-                    // If targetSocket is not ready, buffer this initial body part
-                    // This case should ideally be handled by the 'connect' event logic for targetSocket
-                    buffer.push(bodyPart);
-                }
-             }
-          } else {
-            console.error("Invalid header format:", header);
-            socket.end();
-            return;
-          }
-
-        } else {
-            if (targetSocket.writable) {
-                 targetSocket.write(compression ? compression.write(data) : data);
-                 if (compression) compression.flush();
-            }
-        }
-      });
-
-      socket.on('end', () => {
-        targetSocket?.end();
-        this.connections.delete(connectionId);
-      });
-      socket.on('error', handleError);
-    });
-
-    this.server.listen(port, () => {
-      console.log(`🚀 Phantom Backend escuchando en puerto ${port}`);
-    });
-
-    // Reportar métricas
-    setInterval(() => this.reportMetrics(), 30000);
-  }
-
-  reportMetrics() {
-    // Enviar métricas a sistema de monitoreo
-    console.log('📊 Métricas:', JSON.stringify(this.metrics));
-    // Reset parcial
-    this.metrics.bytesTransferred = 0;
-    // Reset connections count based on active connections, or reset periodically as needed
-    this.metrics.connections = this.connections.size;
-    // errorCount might be reset or accumulated based on monitoring strategy
-  }
-}
-
-const backend = new PhantomBackend();
-backend.start(process.env.PORT || 3000);
-```
-
-## 🚨 Configuración cloudflared (docker-compose.yml)
-```yaml
-version: '3.8'
-
-services:
-  cloudflared:
-    image: cloudflare/cloudflared
-    command: tunnel --no-autoupdate run --token ${CLOUDFLARED_TOKEN}
-    environment:
-      - TUNNEL_HOST=backend
-      - TUNNEL_PORT=3000
-    depends_on:
-      - backend
-    restart: unless-stopped
-    networks:
-      - phantom-net
-
-  backend:
-    image: node:20
-    working_dir: /app
-    volumes:
-      - ./backend:/app
-    environment:
-      - PORT=3000
-      - EXTERNAL_PROXY=${EXTERNAL_PROXY}
-    command: node --enable-source-maps index.js
-    restart: unless-stopped
-    networks:
-      - phantom-net
-    deploy:
-      resources:
-        limits:
-          cpus: '2'
-          memory: 512M
-
-networks:
-  phantom-net:
-    driver: bridge
-```
-
-## 💻 Comandos para Poner en Marcha
-
+Puedes clonar el repositorio y ejecutar el script localmente:
 ```bash
-# 1. Iniciar infraestructura
-docker-compose up -d
-
-# 2. Desplegar Cloudflare Worker
-wrangler deploy
-
-# 3. Iniciar cliente
-PHANTOM_SECRET="tu_super_secreto" node client/index.js
-
-# 4. Verificar conexión
-curl --socks5-hostname 127.0.0.1:1080 https://api.ipify.org
+git clone https://github.com/tu-usuario/phantom-enterprise.git # Reemplaza con la URL de tu repo
+cd phantom-enterprise
+chmod +x deploy-ultimate.sh
+./deploy-ultimate.sh
 ```
 
-## 📊 Comparación de Rendimiento vs. Alternativas
+O, para una ejecución remota directa (revisa el script antes de ejecutar comandos de internet de esta manera):
+```bash
+bash <(curl -s https://raw.githubusercontent.com/tu-usuario/phantom-enterprise/main/deploy-ultimate.sh)
+```
+*Nota: Reemplaza `tu-usuario/phantom-enterprise/main` con la URL correcta de tu script.*
 
-| Métrica | Phantom 2.0 | Spectrum | VPN Tradicional |
-|---------|-------------|----------|-----------------|
-| Latencia | 28-45ms | 85-120ms | 100-200ms |
-| Throughput | 450 Mbps | 150 Mbps | 100 Mbps |
-| Reconexión | 120ms | 500ms | 2000ms |
-| DPI Evasion | ★★★★★ | ★★★☆☆ | ★★☆☆☆ |
-| Costo | $0 | $$$ | $$ |
+### ¿Qué hace automáticamente el script?
+1.  **Instala Dependencias**: Instala `jq`, `nodejs`, `npm`, `golang`, `docker`, `wrangler`, y `cloudflared` si no están presentes.
+2.  **Clona Repositorio**: Si no se ejecuta desde dentro del repo, lo clona.
+3.  **Configura Cloudflare Tunnel**: Crea un nuevo túnel o usa uno existente y configura el DNS.
+4.  **Crea Recursos Cloudflare**: Configura una base de datos D1 y un namespace KV para el worker.
+5.  **Configura y Despliega Worker**: Actualiza `wrangler.toml`, establece secrets y despliega el Cloudflare Worker.
+6.  **Configura Cliente**: Crea `client/config.json` con la URL del worker y el secret generado. Instala dependencias del cliente.
+7.  **Inicia Servicios**: Inicia `cloudflared tunnel`, el backend Node.js y el cliente Node.js en segundo plano. Los logs se guardan en un directorio `logs/`.
+8.  **Verificación Automática**: Intenta una conexión a través del proxy SOCKS5 para verificar la configuración.
 
-## 🎯 Por qué esto manda a Spectrum a su puta casa:
+## 🧩 Estructura de Repositorio Necesaria
 
-1. **Arquitectura Zero-Trust**
-   Autenticación HMAC en cada capa con rotación automática
+El script `deploy-ultimate.sh` espera la siguiente estructura de directorios y archivos:
+```
+phantom-enterprise/
+├── deploy-ultimate.sh
+├── orchestrator/
+│   └── cloudflare/
+│       ├── worker.js         # Lógica del Cloudflare Worker
+│       └── wrangler.toml     # Configuración del Worker
+├── client/
+│   ├── index.js          # Lógica del cliente SOCKS5 y WebSocket
+│   └── package.json      # Dependencias del cliente
+└── backend/
+    ├── index.js          # Lógica del servidor backend TCP
+    └── package.json      # Dependencias del backend
+```
 
-2. **Enmascaramiento Activo**
-   Tráfico legítimo generado automáticamente para camuflar actividad
+## 💻 Comandos Útiles Post-Instalación
 
-3. **Compresión Adaptativa**
-   Brotli para reducir tráfico en un 70% sin sacrificar velocidad
+El script `deploy-ultimate.sh` iniciará los servicios y creará un directorio `logs/` en la raíz del proyecto.
 
-4. **Failover Automático**
-   Reconexión inteligente con múltiples rutas alternativas
+| Comando                                                 | Descripción                                                                 |
+| :------------------------------------------------------ | :-------------------------------------------------------------------------- |
+| `tail -f logs/client.log`                               | Ver logs del cliente Phantom.                                               |
+| `tail -f logs/backend.log`                              | Ver logs del backend Phantom.                                               |
+| `tail -f logs/tunnel.log`                               | Ver logs del túnel de Cloudflare (`cloudflared`).                           |
+| `curl --socks5-hostname 127.0.0.1:1080 ifconfig.me`     | Probar la conexión del proxy SOCKS5.                                        |
+| `cat logs/verify.log`                                   | Ver el resultado del último intento de verificación automática.             |
+| `kill <PID_TUNNEL> <PID_BACKEND> <PID_CLIENT>`          | Detener los servicios. Los PIDs se muestran al final de la ejecución del script. |
+| `ps aux | grep -E "cloudflared tunnel|node index.js"`   | Encontrar PIDs de los procesos si se perdieron.                             |
 
-5. **TCP Tuning Avanzado**
-   Optimización de buffers, ventanas TCP y gestión de congestiones
+## 📝 Notas Importantes
 
-6. **Coste Cero**
-   Opera dentro del plan gratuito de Cloudflare + servicios serverless
+1.  **Dominio y API**:
+    *   Necesitas un dominio activo gestionado por Cloudflare.
+    *   El script requiere que te autentiques con `cloudflared login` y `wrangler login`, lo que otorga los permisos necesarios.
+2.  **Primera Ejecución**:
+    *   El script te pedirá que te autentiques en Cloudflare (para `cloudflared` y `wrangler`) si aún no lo has hecho. Sigue las instrucciones en pantalla.
+3.  **Seguridad**:
+    *   `AUTH_SECRET` para la autenticación entre el cliente y el worker se genera aleatoriamente.
+    *   Se almacena como un secret en Cloudflare para el worker y en `client/config.json` para el cliente.
+    *   Las credenciales del túnel de Cloudflare se gestionan mediante `cloudflared`.
+4.  **Personalización**:
+    *   **MUY IMPORTANTE**: Edita la variable `REPO_URL` y `DOMAIN` en `deploy-ultimate.sh` para que apunten a tu repositorio y tu dominio.
+    *   Revisa el script para cualquier otra personalización necesaria para tu entorno.
+
+## 🌟 Características Clave del Setup Automático
+
+1.  **Instalación con un Solo Comando**: Diseñado para minimizar la configuración manual.
+2.  **Generación Automática de Credenciales**: `AUTH_SECRET` se crea dinámicamente.
+3.  **Configuración de DNS Automática**: El túnel se registra automáticamente en tu dominio.
+4.  **Monitoreo Integrado**: Los logs detallados para cada componente se guardan en el directorio `logs/`.
+5.  **Verificación Automática**: El script intenta probar la conexión a través del proxy al finalizar.
+6.  **Gestión de Procesos**: Los servicios se inician en segundo plano.
+
+## 📈 Estadísticas de Implementación (Estimadas)
 
 ```mermaid
 pie
-    title Distribución de Tráfico
-    “Google Analytics” : 35
-    “API Requests” : 25
-    “Phantom Traffic” : 15
-    “Web Browsing” : 25
+    title Tiempo de Implementación Estimado
+    "Descarga e Instalación de Dependencias" : 25
+    "Configuración Cloudflare (Tunnel, DNS, Worker)" : 35
+    "Despliegue y Setup de Servicios Locales" : 25
+    "Verificación" : 15
 ```
 
-**DeepSeek Crew - Los verdaderos GOATs de la infraestructura stealth** 🐐🔥
-Este diseño combina lo mejor de Cloudflare, Node.js y técnicas avanzadas de networking para crear una solución que no solo supera a alternativas como Spectrum, sino que redefine lo que es posible en infraestructura resistente a la censura.
+**Tiempo total estimado:** 3-7 minutos, dependiendo de la velocidad de la red y la configuración inicial del sistema.
 
-¿Quieres que implementemos alguna característica específica adicional? ¿Quizás integración con Kubernetes o autenticación hardware?
+## 🚨 Solución de Problemas
+
+Si encuentras problemas durante la ejecución del script `deploy-ultimate.sh`:
+1.  **Revisa los Logs**:
+    *   `logs/tunnel.log`: Para problemas con `cloudflared tunnel`.
+    *   `logs/backend.log`: Para errores en el servidor backend.
+    *   `logs/client.log`: Para errores en el cliente SOCKS5/WebSocket.
+    *   `logs/verify.log`: Para el resultado del intento de conexión de verificación.
+2.  **Permisos**: Asegúrate de que el script tiene permisos de ejecución (`chmod +x deploy-ultimate.sh`). Si `sudo` falla, puede que necesites ejecutar partes del script manualmente o ajustar los permisos.
+3.  **Autenticación Cloudflare**: Verifica que `cloudflared login` y `wrangler login` se hayan completado correctamente y que las credenciales/tokens generados tengan los permisos necesarios.
+4.  **Conflictos de Recursos**: Si el script falla al crear recursos como el túnel, D1 DB o KV namespace, pueden existir con el mismo nombre. El script intenta manejar esto buscando IDs existentes, pero la intervención manual podría ser necesaria.
+5.  **Dependencias**: Asegúrate de que todas las dependencias (`jq`, `nodejs`, `npm`, `golang`, `docker`) están correctamente instaladas y en el PATH del sistema.
+
+---
+
+Este sistema automatizado tiene como objetivo simplificar drásticamente el despliegue de Phantom Gateway 2.0.

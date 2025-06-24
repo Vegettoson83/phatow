@@ -1,0 +1,34 @@
+name = "phantom-gateway-worker" # Reemplazado por el script si es necesario, o usado como fallback
+main = "worker.js"
+compatibility_date = "2024-03-15" # Actualizar a una fecha reciente
+
+[vars]
+# TUNNEL_HOST, TUNNEL_PORT, y AUTH_SECRET son configurados via 'wrangler secret put' en el script deploy-ultimate.sh
+
+[[d1_databases]]
+binding = "DB" # Nombre de la vinculación en el código del worker
+database_name = "phantom-db"
+database_id = "" # Este ID será reemplazado por el script deploy-ultimate.sh
+
+[[kv_namespaces]]
+binding = "PHANTOM_STREAMS" # Nombre de la vinculación en el código del worker
+id = "" # Este ID será reemplazado por el script deploy-ultimate.sh
+preview_id = "" # Opcional: para pruebas locales con wrangler dev, puede ser el mismo que 'id' o uno diferente. El script principal no lo gestiona.
+
+# Opcional: Configuraciones adicionales que podrías necesitar
+# [site]
+# bucket = "./public" # Si tu worker sirve assets estáticos
+
+# [build]
+# command = "npm run build" # Si necesitas un paso de compilación para tu worker
+
+# [env.staging] # Ejemplo de configuración para un entorno de staging
+# name = "phantom-gateway-worker-staging"
+# vars = { ENVIRONMENT = "staging" }
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "phantom-db-staging"
+# database_id = "STAGING_DB_ID_PLACEHOLDER" # Reemplazar con ID real para staging
+# [[kv_namespaces]]
+# binding = "PHANTOM_STREAMS"
+# id = "STAGING_KV_ID_PLACEHOLDER" # Reemplazar con ID real para staging
