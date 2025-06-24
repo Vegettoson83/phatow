@@ -1,190 +1,154 @@
-#!/usr/bin/env node
-const net = require('net')
-const crypto = require('crypto')
-const WebSocket = require('ws')
-const axios = require('axios')
+// phantom-client-socks5.js (compatible con P-256 para el worker downgraded)
+import fetch from 'node-fetch';
+import WebSocket from 'ws';
+import net from 'net';
+import { randomBytes } from 'crypto';
+import { TextEncoder, TextDecoder } from 'util';
+import { webcrypto } from 'crypto';
 
-const DEFAULT_WORKER_URL = 'https://phantom-wo.silkvalley612.workers.dev'
-const DEFAULT_SOCKS_PORT = 1080
+const crypto = webcrypto;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
-class PhantomCrypto {
-  constructor() {
-    this.ecdh = crypto.createECDH('prime256v1')
-    this.ecdh.generateKeys()
-    this.sharedKey = null
-  }
+const WORKER_URL = 'https://shadow.silkvalley612.workers.dev';
+const LOCAL_PORT = 1080; // Puerto local SOCKS5
 
-  getPublicKey() {
-    return this.ecdh.getPublicKey(null, 'uncompressed')
-  }
+async function deriveKeyAndInitSession() {
+  // Generar par de claves ECDH con curva P-256
+  const clientKeyPair = await crypto.subtle.generateKey(
+    { name: 'ECDH', namedCurve: 'P-256' },
+    true,
+    ['deriveKey']
+  );
 
-  deriveSharedKey(peerPublicKey) {
-    this.sharedKey = this.ecdh.computeSecret(peerPublicKey)
-    this.sharedKey = crypto.hkdfSync('sha256', this.sharedKey, null, Buffer.from('phantom_proxy_session'), 32)
-  }
+  // Exportar clave pública del cliente (formato raw)
+  const clientPubRaw = new Uint8Array(
+    await crypto.subtle.exportKey('raw', clientKeyPair.publicKey)
+  );
 
-  encrypt(plaintext) {
-    const iv = crypto.randomBytes(12)
-    const cipher = crypto.createCipheriv('aes-256-gcm', this.sharedKey, iv)
-    const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()])
-    const tag = cipher.getAuthTag()
-    return Buffer.concat([iv, encrypted, tag])
-  }
+  // Iniciar sesión con phantom-init
+  const initResp = await fetch(`${WORKER_URL}/phantom-init`, {
+    method: 'POST',
+    body: Buffer.from(clientPubRaw),
+  });
+  const { session_id, server_key } = await initResp.json();
+  const cookie = initResp.headers.get('set-cookie');
 
-  decrypt(data) {
-    if (data.length < 28) throw new Error('Encrypted data too short')
-    const iv = data.slice(0, 12)
-    const tag = data.slice(data.length - 16)
-    const encrypted = data.slice(12, data.length - 16)
-    const decipher = crypto.createDecipheriv('aes-256-gcm', this.sharedKey, iv)
-    decipher.setAuthTag(tag)
-    return Buffer.concat([decipher.update(encrypted), decipher.final()])
-  }
+  // Importar clave pública del servidor
+  const serverPubRaw = Uint8Array.from(Buffer.from(server_key, 'base64'));
+  const serverPublicKey = await crypto.subtle.importKey(
+    'raw',
+    serverPubRaw,
+    { name: 'ECDH', namedCurve: 'P-256' },
+    false,
+    []
+  );
+
+  // Derivar clave compartida AES-GCM
+  const derivedKey = await crypto.subtle.deriveKey(
+    { name: 'ECDH', public: serverPublicKey },
+    clientKeyPair.privateKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+
+  // Confirmar handshake
+  await fetch(`${WORKER_URL}/phantom-handshake`, {
+    method: 'POST',
+    headers: { Cookie: cookie }
+  });
+
+  return { derivedKey, cookie };
 }
 
-class PhantomClient {
-  constructor(workerUrl) {
-    this.workerUrl = workerUrl
-    this.crypto = new PhantomCrypto()
-    this.sessionId = null
-    this.ws = null
-  }
+async function encryptMessage(derivedKey, data) {
+  const iv = randomBytes(12);
+  const encryptedBuffer = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    derivedKey,
+    data
+  );
+  return Buffer.concat([iv, Buffer.from(encryptedBuffer)]);
+}
 
-  async handshake() {
-    const pubKey = this.crypto.getPublicKey()
-    const resp = await axios.post(`${this.workerUrl}/phantom-init`, pubKey, {
-      headers: { 'Content-Type': 'application/octet-stream' },
-      validateStatus: () => true,
-    })
-    if (resp.status !== 200) throw new Error('Handshake phase 1 failed')
-    this.sessionId = resp.data.session_id
-    const serverKey = Buffer.from(resp.data.server_key, 'base64')
-    this.crypto.deriveSharedKey(serverKey)
+async function decryptMessage(derivedKey, payload) {
+  const iv = payload.slice(0, 12);
+  const ciphertext = payload.slice(12);
+  const decryptedBuffer = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv },
+    derivedKey,
+    ciphertext
+  );
+  return Buffer.from(decryptedBuffer);
+}
 
-    const handshakeResp = await axios.get(`${this.workerUrl}/phantom-handshake`, {
-      headers: { Cookie: `phantom-sid=${this.sessionId}` },
-      validateStatus: () => true,
-    })
-    if (handshakeResp.data !== 'HANDSHAKE_SUCCESS') throw new Error('Handshake phase 2 failed')
-  }
+function startSocks5Proxy(derivedKey, cookie) {
+  const server = net.createServer(socket => {
+    const ws = new WebSocket(`${WORKER_URL.replace('https', 'wss')}/tunnel`, {
+      headers: { Cookie: cookie }
+    });
 
-  async connect(host, port) {
-    this.ws = new WebSocket(`${this.workerUrl.replace(/^http/, 'ws')}/tunnel`, {
-      headers: { Cookie: `phantom-sid=${this.sessionId}` },
-    })
+    ws.on('open', () => {
+      socket.once('data', async data => {
+        if (data[0] !== 0x05) return socket.destroy();
+        socket.write(Buffer.from([0x05, 0x00]));
 
-    await new Promise((res, rej) => {
-      this.ws.once('open', res)
-      this.ws.once('error', rej)
-    })
+        socket.once('data', async req => {
+          const addrType = req[3];
+          let addr, port;
 
-    const target = Buffer.from(`${host}:${port}`)
-    this.ws.send(this.crypto.encrypt(target))
-  }
+          if (addrType === 0x01) {
+            addr = Array.from(req.slice(4, 8)).join('.');
+            port = req.readUInt16BE(8);
+          } else if (addrType === 0x03) {
+            const len = req[4];
+            addr = req.slice(5, 5 + len).toString();
+            port = req.readUInt16BE(5 + len);
+          } else {
+            return socket.destroy();
+          }
 
-  async proxyData(socket) {
-    this.ws.on('message', data => {
+          const target = `${addr}:${port}`;
+          const encryptedTarget = await encryptMessage(
+            derivedKey,
+            encoder.encode(target)
+          );
+          ws.send(encryptedTarget);
+
+          // Respuesta SOCKS5 OK
+          socket.write(Buffer.from([
+            0x05, 0x00, 0x00, 0x01,
+            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00
+          ]));
+
+          socket.on('data', async chunk => {
+            ws.send(await encryptMessage(derivedKey, chunk));
+          });
+        });
+      });
+    });
+
+    ws.on('message', async msg => {
       try {
-        const decrypted = this.crypto.decrypt(Buffer.from(data))
-        socket.write(decrypted)
-      } catch (e) {
-        console.error('Decrypt error:', e)
-        socket.destroy()
-        this.ws.close()
+        const plain = await decryptMessage(derivedKey, Buffer.from(msg));
+        socket.write(plain);
+      } catch (err) {
+        console.error('[!] Error al desencriptar:', err.message);
       }
-    })
+    });
 
-    socket.on('data', data => {
-      try {
-        this.ws.send(this.crypto.encrypt(data))
-      } catch (e) {
-        console.error('Encrypt error:', e)
-        socket.destroy()
-        this.ws.close()
-      }
-    })
+    ws.on('close', () => socket.destroy());
+    socket.on('close', () => ws.close());
+  });
 
-    socket.on('close', () => this.ws.close())
-    this.ws.on('close', () => socket.destroy())
-  }
+  server.listen(LOCAL_PORT, () => {
+    console.log(`[+] SOCKS5 proxy corriendo en 127.0.0.1:${LOCAL_PORT}`);
+  });
 }
 
-async function handleSocksConnection(socket, workerUrl) {
-  try {
-    const header = await readBytes(socket, 2)
-    if (header[0] !== 0x05) throw new Error('Invalid SOCKS version')
-    const nMethods = header[1]
-    await readBytes(socket, nMethods)
-    socket.write(Buffer.from([0x05, 0x00]))
-
-    const req = await readBytes(socket, 4)
-    if (req[1] !== 0x01) { socket.end(); return }
-
-    let addr, port
-    if (req[3] === 0x01) {
-      const ipBuf = await readBytes(socket, 4)
-      addr = Array.from(ipBuf).join('.')
-    } else if (req[3] === 0x03) {
-      const lenBuf = await readBytes(socket, 1)
-      const len = lenBuf[0]
-      const domainBuf = await readBytes(socket, len)
-      addr = domainBuf.toString()
-    } else {
-      socket.end()
-      return
-    }
-    const portBuf = await readBytes(socket, 2)
-    port = portBuf.readUInt16BE(0)
-
-    const client = new PhantomClient(workerUrl)
-    await client.handshake()
-    await client.connect(addr, port)
-
-    socket.write(Buffer.from([
-      0x05, 0x00, 0x00, 0x01,
-      0,0,0,0,
-      0,0
-    ]))
-
-    await client.proxyData(socket)
-  } catch (e) {
-    console.error('SOCKS connection error:', e)
-    socket.destroy()
-  }
-}
-
-function readBytes(socket, length) {
-  return new Promise((resolve, reject) => {
-    let buf = Buffer.alloc(0)
-    function onData(data) {
-      buf = Buffer.concat([buf, data])
-      if (buf.length >= length) {
-        socket.pause()
-        socket.removeListener('data', onData)
-        resolve(buf.slice(0, length))
-        const leftover = buf.slice(length)
-        if (leftover.length > 0) socket.unshift(leftover)
-        socket.resume()
-      }
-    }
-    socket.on('data', onData)
-    socket.on('error', reject)
-    socket.on('close', () => reject(new Error('Socket closed')))
-  })
-}
-
-async function main() {
-  const workerUrl = process.argv[2] || DEFAULT_WORKER_URL
-  const socksPort = parseInt(process.argv[3]) || DEFAULT_SOCKS_PORT
-
-  const server = net.createServer(socket => handleSocksConnection(socket, workerUrl))
-
-  server.listen(socksPort, '127.0.0.1', () => {
-    console.log(`🔥 Phantom Proxy activo en 127.0.0.1:${socksPort}`)
-    console.log(`🔗 Conectando a worker: ${workerUrl}`)
-  })
-}
-
-main().catch(console.error)
-
-
+(async () => {
+  const { derivedKey, cookie } = await deriveKeyAndInitSession();
+  startSocks5Proxy(derivedKey, cookie);
+})();
