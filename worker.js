@@ -1,3 +1,4 @@
+// Updated phantom_worker.js with correct URL integration and cleanup
 addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request))
 })
@@ -164,10 +165,8 @@ function getSessionId(request) {
   if (!cookie) return null
   const match = cookie.match(/phantom-sid=([^;]+)/)
   return match ? match[1] : null
-
+}
 
 function arrayBufferToBase64(buffer) {
   return btoa(String.fromCharCode(...new Uint8Array(buffer)))
-}
-
 }
