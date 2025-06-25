@@ -3,10 +3,9 @@ import { connect } from 'cloudflare:sockets';
 export default {
   async fetch(req) {
     const url = new URL(req.url);
-    const rawTarget = url.searchParams.get("target");
+    const target = url.searchParams.get("target");
 
-    // Camuflaje si visitan directo sin ?target
-    if (req.method === "GET" && !rawTarget) {
+    if (req.method === "GET" && !url.searchParams.has("target")) {
       return new Response("", {
         status: 204,
         headers: {
@@ -17,30 +16,24 @@ export default {
       });
     }
 
-    // Validación y parsing del target
-    const [hostname, portStr] = rawTarget.split(":");
-    const port = parseInt(portStr, 10);
-    if (!hostname || !port) {
-      return new Response("Invalid target", { status: 400 });
-    }
-
     try {
-      const socket = connect({ hostname, port });
+      const socket = connect({ hostname: target.split(':')[0], port: parseInt(target.split(':')[1]) });
 
-      // Manejo WebSocket
-      if (req.headers.get("Upgrade")?.toLowerCase() === "websocket") {
-        const { 0: client, 1: server } = new WebSocketPair();
+      const upgrade = req.headers.get("Upgrade") || "";
 
-        // Flujo WebSocket <-> TCP socket
+      if (upgrade.toLowerCase() === "websocket") {
+        const pair = new WebSocketPair();
+        const [client, server] = [pair[0], pair[1]];
+
         socket.readable.pipeTo(server.writable).catch(() => {});
         server.readable.pipeTo(socket.writable).catch(() => {});
 
         return new Response(null, { status: 101, webSocket: client });
       }
 
-      return new Response("Expected WebSocket upgrade", { status: 400 });
+      return new Response("Expected WebSocket", { status: 400 });
     } catch (err) {
-      return new Response("Connect error: " + err.message, { status: 502 });
+      return new Response("Connect error: " + err, { status: 502 });
     }
   },
 };
